@@ -76,7 +76,6 @@ def compute_feature_weights(df, target, num_cols, cat_cols):
     weights : dict
         {column_name: weight}, веса нормированы (сумма = число признаков).
     """
-    df = df.copy()
     y = target.values
 
     # Кодируем категориальные
@@ -86,7 +85,6 @@ def compute_feature_weights(df, target, num_cols, cat_cols):
         le = LabelEncoder()
         df_enc[c] = le.fit_transform(df_enc[c].astype(str))
         discrete_features.append(df.columns.get_loc(c))  # индексы категориальных
-
     X = df_enc.to_numpy()
 
     # Вычисляем MI
@@ -360,9 +358,44 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
     results = {}
     df.reset_index(inplace=True, drop=True)
     # Распределение таргета по кластерам
-    summary = df.groupby(cluster_col)[target_col].agg(
-        ["count", "mean", "std", "min", "max", "median"]
-    ).sort_values("mean", ascending=False)
+    if pd.api.types.is_numeric_dtype(df[target_col]):
+      summary = df.groupby(cluster_col)[target_col].agg(
+          ["count", "mean", "std", "min", "max", "median"]
+      ).sort_values("mean", ascending=False)
+      summary.columns = [
+          "Количество объектов", 
+          "Среднее значение таргета", 
+          "Стд. откл.", 
+          "Минимальное значение", 
+          "Максимальное", 
+          "Медиана"
+      ]
+
+    else:
+      counts = (
+          df.groupby([cluster_col, target_col])
+          .size()
+          .reset_index(name="count")
+      )
+
+      total = counts.groupby(cluster_col)["count"].transform("sum")
+      counts["share"] = (counts["count"] / total * 100).round(2)
+
+      # Наиболее частая категория в каждом кластере
+      mode_df = (
+          counts.sort_values(["cluster", "count"], ascending=[True, False])
+          .drop_duplicates(subset=[cluster_col])
+          .rename(columns={target_col: "most_frequent"})
+          .loc[:, [cluster_col, "most_frequent"]]
+      )
+
+      summary = (
+          counts.pivot(index=cluster_col, columns=target_col, values="share")
+          .fillna(0)
+      )
+      summary.columns = [f"{col} (% в кластере)" for col in summary.columns]
+      summary["Самая частая категория"] = mode_df.set_index(cluster_col)["most_frequent"]
+      summary["Всего объектов"] = counts.groupby(cluster_col)["count"].sum().values    
 
     # Объяснение кластеров через DecisionTreeClassifier
     X = df[num_cols + cat_cols]
@@ -394,14 +427,15 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
         clf.named_steps["tree"].feature_importances_,
         index=clf.named_steps["prep"].get_feature_names_out()
     ).sort_values(ascending=False)
+    importances.name = "Важность признака"
 
     results["cluster_importances"] = importances
 
     return summary, super_tree, importances
 
-###### 
+######
 ### Общий анализ внутри кластеров
-def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", cluster=0, max_depth=4):
+def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", cluster=0, max_depth=6):
     results = {}
     df.reset_index(inplace=True, drop=True)
 
@@ -429,19 +463,21 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
       ])
 
       model.fit(X_sub, y_sub)
+      class_names = None
 
     # Если целевой признак категориальный DecisionTreeClassifier
     elif pd.api.types.is_object_dtype(subset[target_col]) == True:
-      
+
       le = LabelEncoder()
-      y_enc = le_y.fit_transform(y_sub)
+      y_enc = le.fit_transform(y_sub)
 
       model = Pipeline([
           ("prep", preproc),
           ("tree", DecisionTreeClassifier(max_depth=max_depth, random_state=42))
       ])
 
-      model.fit(X_sub, y_enc)    
+      model.fit(X_sub, y_enc)
+      class_names = le.classes_
 
     else:
         raise ValueError("Тип целевой переменной должен быть числовым или категориальным")
@@ -450,6 +486,7 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
         model.named_steps["tree"].feature_importances_,
         index=model.named_steps["prep"].get_feature_names_out()
     ).sort_values(ascending=False)
+    importances.name = "Важность признака"
 
     target_results[cluster] = importances
 
@@ -460,8 +497,9 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
         model.named_steps["tree"],
         model.named_steps["prep"].transform(X_sub),
         y_sub.reset_index(drop=True),
-        model.named_steps["prep"].get_feature_names_out())
-
+        model.named_steps["prep"].get_feature_names_out(),
+        target_names=class_names)
+    
     return super_tree
 
 ######################## Streamlit layout ##################
@@ -512,15 +550,15 @@ if uploaded_file is not None:
     # Подготовка данных
     st.subheader("Подготовка данных")
 
+    # === 4. Выбор столбцов для удаления ===
+    drop_cols = st.multiselect("Выберите признаки для удаления",
+                               df.columns.tolist())
+    if drop_cols:
+        df = df.drop(columns=drop_cols)
+
     # === 3. Выбор таргета ===
     target = st.selectbox("Выберите целевой признак", df.columns.tolist())
     df.dropna(subset=[target], inplace=True)
-
-    # === 4. Выбор столбцов для удаления ===
-    drop_cols = st.multiselect("Выберите признаки для удаления",
-                               df.drop(target, axis=1).columns.tolist())
-    if drop_cols:
-        df = df.drop(columns=drop_cols)
 
     # === 5. Фильтрация ===
     filter_cols = st.multiselect("Выберите признаки для фильтра", df.columns.tolist())
@@ -594,7 +632,7 @@ if uploaded_file is not None:
     datetime_columns = df.select_dtypes(include=[np.datetime64]).columns
     # Сохраняем данные для кластеризации
     X = df.drop(target, axis=1)
-    X = df.drop(datetime_columns, axis=1)
+    X = X.drop(datetime_columns, axis=1)
     y = df[target]
 
 
@@ -686,29 +724,46 @@ if uploaded_file is not None:
       st.write(f"Отображается {len(st.session_state.result.head(500))} из {len(st.session_state.result)} строк")
       st.dataframe(st.session_state.result.head(500))
 
-    st.header("Анализ кластеризации")
-    if st.button("Начать анализ"):
-      st.session_state.summary, st.session_state.super_tree, st.session_state.importances = analyze_all_clusters(st.session_state.result, target, num_cols, cat_cols)
-    
-    if hasattr(st.session_state, "super_tree"):
-      st.subheader("Правила, объясняющие кластеры")
-      if "super_tree_html" not in st.session_state:
+      st.header("Анализ кластеризации")
+      if st.button("Начать анализ"):
+        st.session_state.summary, st.session_state.super_tree, st.session_state.importances = (
+            analyze_all_clusters(
+                st.session_state.result, 
+                target, 
+                num_cols, 
+                cat_cols
+                )
+        )
+        
         with NamedTemporaryFile(suffix=".html", delete=False) as f:
           st.session_state.super_tree.save_html(f.name)
           st.session_state.super_tree_html = open(f.name, "r", encoding="utf-8").read()
-      
-      st.text(f"Распределение целевого признака {target} по кластерам:")
-      st.dataframe(st.session_state.summary)
-      st.subheader("\n Главные признаки, формирующие кластеры:")
-      st.dataframe(st.session_state.importances.head(10))
-      html(st.session_state.super_tree_html, height=650)
 
-    option_cluster = st.selectbox("Выберите кластер для внутрикластерного анализа", st.session_state.result['cluster'].unique())
-    if st.button("Внутрикластерный анализ"):
-      cluster_tree = analyze_within_clusters(st.session_state.result, target, num_cols, cat_cols, cluster=option_cluster)
-      with NamedTemporaryFile(suffix=".html", delete=False) as f1:
-        cluster_tree.save_html(f1.name)
-        html(f1.read(), height=650)
+      if hasattr(st.session_state, "super_tree"):
+        st.subheader("Правила, объясняющие кластеры")
+
+        st.text(f"Распределение целевого признака {target} по кластерам:")
+        st.dataframe(st.session_state.summary)
+        st.subheader("\n Главные признаки, формирующие кластеры:")
+        st.dataframe(st.session_state.importances.head(10))
+        if "super_tree_html" in st.session_state:
+          html(st.session_state.super_tree_html, height=650)
+
+      option_cluster = st.selectbox(
+          "Выберите кластер для внутрикластерного анализа", 
+          st.session_state.result['cluster'].unique()
+      )
+      if st.button("Внутрикластерный анализ"):
+        cluster_tree = analyze_within_clusters(
+            st.session_state.result, 
+            target, 
+            num_cols, 
+            cat_cols, 
+            cluster=option_cluster
+        )
+        with NamedTemporaryFile(suffix=".html", delete=False) as f1:
+          cluster_tree.save_html(f1.name)
+          html(f1.read(), height=650)
 
 else:
     st.info("Загрузите файл для начала работы")
