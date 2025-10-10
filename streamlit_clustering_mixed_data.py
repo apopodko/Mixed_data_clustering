@@ -31,6 +31,9 @@ from sklearn.feature_selection import mutual_info_classif, mutual_info_regressio
 # Cluster Explanation
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor, plot_tree
 
+from tempfile import NamedTemporaryFile
+from supertree import SuperTree
+from streamlit.components.v1 import html
 import faiss
 
 # Расчет ренжей для расстояния Говера
@@ -63,20 +66,18 @@ def compute_numeric_ranges(df, num_cols, method='minmax', iqr_multiplier=1.5):
     return ranges
 
 # Расчет весов для расстояния Говера
-def compute_feature_weights(df, target, num_cols, cat_cols, task="regression"):
+def compute_feature_weights(df, target, num_cols, cat_cols):
     """
     Считает веса признаков по взаимной информации (MI) с таргетом
     df : Входные данные
     target : pd.Series или np.array таргет (числовой или категориальный)
-    task : str
-        "regression" или "classification".
 
     output:
     weights : dict
         {column_name: weight}, веса нормированы (сумма = число признаков).
     """
     df = df.copy()
-    y = target.values if isinstance(target, pd.Series) else np.array(target)
+    y = target.values
 
     # Кодируем категориальные
     df_enc = df.copy()
@@ -89,12 +90,12 @@ def compute_feature_weights(df, target, num_cols, cat_cols, task="regression"):
     X = df_enc.to_numpy()
 
     # Вычисляем MI
-    if task == "regression":
+    if pd.api.types.is_numeric_dtype(target) == True:
         mi = mutual_info_regression(X, y, discrete_features=discrete_features, random_state=42)
-    elif task == "classification":
+    elif pd.api.types.is_object_dtype(target) == True:
         mi = mutual_info_classif(X, y, discrete_features=discrete_features, random_state=42)
     else:
-        raise ValueError("task должен быть 'regression' или 'classification'")
+        raise ValueError("Тип целевой переменной должен быть числовым или категориальным")
 
     # Нормируем веса (сумма = число признаков)
     mi = np.maximum(mi, 1e-9)  # чтобы не было нулевых
@@ -149,15 +150,29 @@ def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None,
     if total_weight <= 0:
         total_weight = 1.0
     D = (D / float(total_weight)).astype(dtype)
-    return D
+    return D.astype(np.float64)
 
 ### Кластеризация
-def tune_hdbscan(D, param_grid, d):
-    best_score = -1
-    best_params = None
-    best_labels = None
+def clusterize(df, D, method="HDBSCAN", max_k=20):
+    """
+    Кластеризация на подвыборке.
+    method = "hdbscan" или "hac"
+    """
 
-    for params in param_grid:
+    if method == "HDBSCAN":
+      best_score = -1
+      best_params = None
+      best_labels = None
+      d = df.shape[1]
+      # specify parameters and distributions to sample from
+      param_grid = [
+          {"min_cluster_size": mcs, "min_samples": ms, "cluster_selection_method": csm}
+          for mcs in [10, 20, 30, 50, 100]
+          for ms in [5, 10, 20, 30, 50, 100]
+          for csm in ["eom", "leaf"]
+      ]
+
+      for params in param_grid:
         cl = hdbscan.HDBSCAN(metric="precomputed", **params)
         labels = cl.fit_predict(D)
 
@@ -172,60 +187,35 @@ def tune_hdbscan(D, param_grid, d):
                 best_score = score
                 best_params = params
                 best_labels = labels
-    return best_params, best_score, best_labels
 
-def clusterize(df, D, method="hac", max_k=20):
-    """
-    Кластеризация на подвыборке.
-    method = "hdbscan" или "hac"
-    """
+    elif method == "HAC":
+      # преобразуем матрицу в condensed form
+      condensed = squareform(D, checks=False)
 
-    if method == "hdbscan":
-        cl = hdbscan.HDBSCAN(
-            metric="precomputed"
-        )
-        # specify parameters and distributions to sample from
-        param_grid = [
-            {"min_cluster_size": mcs, "min_samples": ms, "cluster_selection_method": csm}
-            for mcs in [10, 20, 30, 50, 100]
-            for ms in [5, 10, 20, 30, 50, 100]
-            for csm in ["eom", "leaf"]
-        ]
-        d = df.shape[1]
-        best_params, best_score, labels = tune_hdbscan(
-            D.astype(np.float64), param_grid, d)
+      # linkage (average linkage лучше для Gower)
+      Z = linkage(condensed, method="complete")
 
-        print("Best params:", best_params)
-        print("Best validity:", best_score)
+      # поиск оптимального k по silhouette
+      best_k, best_score, best_labels = None, -1, None
+      for k in range(2, min(max_k, len(df)//100)):
+          labels = fcluster(Z, k, criterion="maxclust")
+          if len(np.unique(labels)) < 2:
+              continue
+          try:
+              score = silhouette_score(D, labels, metric="precomputed")
+          except Exception:
+              continue
+          if score > best_score:
+              best_score, best_k, best_labels = score, k, labels
 
-    elif method == "hac":
-        # преобразуем матрицу в condensed form
-        condensed = squareform(D, checks=False)
+      if best_labels is None:
+          # fallback: всё в один кластер
+          best_labels = np.ones(len(df), dtype=int)
 
-        # linkage (average linkage лучше для Gower)
-        Z = linkage(condensed, method="complete")
-
-        # поиск оптимального k по silhouette
-        best_k, best_score, best_labels = None, -1, None
-        for k in range(2, min(max_k, len(df)//100)):
-            labels = fcluster(Z, k, criterion="maxclust")
-            if len(np.unique(labels)) < 2:
-                continue
-            try:
-                score = silhouette_score(D, labels, metric="precomputed")
-            except Exception:
-                continue
-            if score > best_score:
-                best_score, best_k, best_labels = score, k, labels
-
-        if best_labels is None:
-            # fallback: всё в один кластер
-            best_labels = np.ones(len(df), dtype=int)
-
-        labels = best_labels
+      labels = best_labels
 
     else:
-        raise ValueError("method must be 'hdbscan' or 'hac'")
+      raise ValueError("method must be 'HDBSCAN' or 'HAC'")
 
     return labels
 
@@ -284,6 +274,196 @@ def vectorize(df, num_cols, cat_cols, ohe_thresh=20, hash_dim=32):
 
     return X.astype(np.float32)
 
+#### FAISS на сэпмлированной выборке
+def build_faiss_hnsw(X_S, M=32, efSearch=64):
+    """
+    Создаёт HNSW индекс FAISS для подвыборки X_S
+
+        X_S : сэмплированный массив от кластерзиации
+        M : число соседей в графе HNSW
+        efSearch : ширина поиска
+    output:
+        index : faiss.IndexHNSWFlat
+    """
+    dim = X_S.shape[1]
+    index = faiss.IndexHNSWFlat(dim, M)
+    index.hnsw.efSearch = efSearch
+    index.add(X_S)
+    return index
+
+
+###### Присваивание лейблом через FAISS HSNW
+def assign_faiss(index, X_rest, labels_S, k=3, ood_threshold=None, weighted=True):
+    """
+    Приписывает новые точки к кластерам из labels_S через HNSW
+
+        index : faiss.IndexHNSWFlat, построенный на кластеризованном сэмпле X_S
+        X_rest : новые точки из некластеризованной выборки
+        labels_S : метки кластеров
+        k : число ближайших соседей
+        ood_threshold : float или None, порог для OOD; если None - вычисляется как 99-й перцентиль расстояний в S
+        weighted : bool, использовать взвешенное голосование по расстоянию
+
+    output:
+        assigned_labels : присвоенные лейбл
+        assign_distance : расстояние до выбранного кластера
+        is_OOD : True если объект OOD
+    """
+    n_S = labels_S.shape[0]
+    k = min(k, n_S)
+
+    D, I = index.search(X_rest, k)  # distances & indices
+    n_rest = X_rest.shape[0]
+    assigned_labels = np.empty(n_rest, dtype=int)
+    assign_distance = np.empty(n_rest, dtype=float)
+    is_OOD = np.zeros(n_rest, dtype=bool)
+
+    # OOD threshold если не задан
+    if ood_threshold is None:
+        # эмпирический 99-й перцентиль всех расстояний внутри S
+        # D_self: расстояния до 1-го ближайшего соседа в S (exclude self)
+        D_self, _ = index.search(index.reconstruct_n(0, n_S), 2)
+        D_self = D_self[:, 1]  # первый сосед = сам объект, берем 2-й
+        ood_threshold = np.quantile(D_self, 0.99)
+
+    for i in range(n_rest):
+        neigh_idxs = I[i]
+        neigh_dists = D[i]
+        neigh_labels = labels_S[neigh_idxs]
+
+        if weighted:
+            # взвешенное голосование: 1/(dist+1e-9)
+            weights = 1.0 / (neigh_dists + 1e-9)
+            label_score = {}
+            for lbl, w in zip(neigh_labels, weights):
+                label_score[lbl] = label_score.get(lbl, 0.0) + w
+            # выбираем label с максимальной суммы весов
+            assigned_label = max(label_score.items(), key=lambda x: x[1])[0]
+        else:
+            # через ArgMax
+            vals, counts = np.unique(neigh_labels, return_counts=True)
+            assigned_label = vals[np.argmax(counts)]
+
+        assigned_labels[i] = assigned_label
+        # расстояние до ближайшего соседа с выбранным label
+        mask = neigh_labels == assigned_label
+        assign_distance[i] = neigh_dists[mask].min()
+        # OOD
+        is_OOD[i] = assign_distance[i] > ood_threshold
+
+    return assigned_labels, assign_distance, is_OOD
+
+#################### Анализ кластеризации ##################################
+
+### Общий анализ кластеров
+def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", max_depth=6):
+    results = {}
+    df.reset_index(inplace=True, drop=True)
+    # Распределение таргета по кластерам
+    summary = df.groupby(cluster_col)[target_col].agg(
+        ["count", "mean", "std", "min", "max", "median"]
+    ).sort_values("mean", ascending=False)
+
+    # Объяснение кластеров через DecisionTreeClassifier
+    X = df[num_cols + cat_cols]
+    y = df[cluster_col].astype(str)
+
+    preproc = ColumnTransformer(
+        transformers=[
+            ("num", "passthrough", num_cols),
+            ("cat", OneHotEncoder(sparse_output=False, handle_unknown="ignore"), cat_cols)
+        ]
+    )
+
+    clf = Pipeline([
+        ("prep", preproc),
+        ("tree", DecisionTreeClassifier(max_depth=max_depth, random_state=42))
+    ])
+
+    clf.fit(X, y)
+    #### Строим дерево объяснющее кластеры
+    super_tree = SuperTree(
+        clf.named_steps["tree"],
+        clf.named_steps["prep"].transform(X),
+        y,
+        clf.named_steps["prep"].get_feature_names_out(),
+        np.unique(y))
+
+
+    importances = pd.Series(
+        clf.named_steps["tree"].feature_importances_,
+        index=clf.named_steps["prep"].get_feature_names_out()
+    ).sort_values(ascending=False)
+
+    results["cluster_importances"] = importances
+
+    return summary, super_tree, importances
+
+###### 
+### Общий анализ внутри кластеров
+def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", cluster=0, max_depth=4):
+    results = {}
+    df.reset_index(inplace=True, drop=True)
+
+    preproc = ColumnTransformer(
+        transformers=[
+            ("num", "passthrough", num_cols),
+            ("cat", OneHotEncoder(sparse_output=False, handle_unknown="ignore"), cat_cols)
+        ]
+    )
+
+    st.header("Внутрикластерный анализ")
+    # Анализ таргета внутри каждого кластера
+    target_results = {}
+    subset = df[df[cluster_col] == cluster]
+
+    X_sub = subset[num_cols + cat_cols]
+    y_sub = subset[target_col]
+
+    # Если целевой признак числовой DecisionTreeRegresor
+    if pd.api.types.is_numeric_dtype(subset[target_col]) == True:
+
+      model = Pipeline([
+          ("prep", preproc),
+          ("tree", DecisionTreeRegressor(max_depth=max_depth, random_state=42))
+      ])
+
+      model.fit(X_sub, y_sub)
+
+    # Если целевой признак категориальный DecisionTreeClassifier
+    elif pd.api.types.is_object_dtype(subset[target_col]) == True:
+      
+      le = LabelEncoder()
+      y_enc = le_y.fit_transform(y_sub)
+
+      model = Pipeline([
+          ("prep", preproc),
+          ("tree", DecisionTreeClassifier(max_depth=max_depth, random_state=42))
+      ])
+
+      model.fit(X_sub, y_enc)    
+
+    else:
+        raise ValueError("Тип целевой переменной должен быть числовым или категориальным")
+
+    importances = pd.Series(
+        model.named_steps["tree"].feature_importances_,
+        index=model.named_steps["prep"].get_feature_names_out()
+    ).sort_values(ascending=False)
+
+    target_results[cluster] = importances
+
+    st.subheader(f"\n Кластер {cluster}: факторы и правила, влияющие на таргет")
+    st.dataframe(importances.head(5))
+
+    super_tree = SuperTree(
+        model.named_steps["tree"],
+        model.named_steps["prep"].transform(X_sub),
+        y_sub.reset_index(drop=True),
+        model.named_steps["prep"].get_feature_names_out())
+
+    return super_tree
+
 ######################## Streamlit layout ##################
 
 st.set_page_config(page_title="Анализ и фильтрация данных", layout="wide")
@@ -335,13 +515,6 @@ if uploaded_file is not None:
     # === 3. Выбор таргета ===
     target = st.selectbox("Выберите целевой признак", df.columns.tolist())
     df.dropna(subset=[target], inplace=True)
-    option_task = st.radio("Выберите тип целевого признака",
-                           ("Числовой", "Категориальный"),
-                           horizontal=True)
-    if option_task == "Числовой":
-      option_task = "regression"
-    else:
-      option_task = "classification"
 
     # === 4. Выбор столбцов для удаления ===
     drop_cols = st.multiselect("Выберите признаки для удаления",
@@ -416,11 +589,12 @@ if uploaded_file is not None:
 
     # === 7. Результат ===
     st.subheader("Отфильтрованные данные")
-    st.write(f"Отображается {len(df)} из {len(df)} строк")
-    st.dataframe(df)
-
+    st.write(f"Отображается {len(df.head(500))} из {len(df)} строк")
+    st.dataframe(df.head(500))
+    datetime_columns = df.select_dtypes(include=[np.datetime64]).columns
     # Сохраняем данные для кластеризации
     X = df.drop(target, axis=1)
+    X = df.drop(datetime_columns, axis=1)
     y = df[target]
 
 
@@ -432,42 +606,109 @@ if uploaded_file is not None:
     option_weights = st.radio("Рассчитываем веса на основе взаимной ифнормации с целевым признаком?",
                               ("Да", "Нет"),
                               horizontal=True)
-    
+
     if st.button("Рассчитать расстояния Говера"):
 
 
-      # Векторизуем данные для FAISS  
-      X_vectorized = vectorize(X, num_cols, cat_cols)
+      # Готовим индексы для FAISS, на случай, несли выборка будет больше 8000
       N = X.shape[0]
       S = min(8000, N)
       idx_all = np.arange(N)
       idx_S = np.random.choice(idx_all, size=S, replace=False)
       idx_rest = np.setdiff1d(idx_all, idx_S)
 
-      X_S = X_vectorized[idx_S]
-      X_rest = X_vectorized[idx_rest]
-
+      # Рассчитываем веса для расстояния Говера
       if option_weights == "Да":
-        weights = compute_feature_weights(X.iloc[idx_S], y.iloc[idx_S], num_cols, cat_cols, task=option_task)
+        weights = compute_feature_weights(X.iloc[idx_S], y.iloc[idx_S], num_cols, cat_cols)
       else:
-        weights = None       
+        weights = None
+
+      # Рассчитываем расстояния Говера
       st.session_state.idx_S = idx_S
       st.session_state.D = compute_gower_matrix(X.iloc[idx_S], num_cols, cat_cols, numeric_ranges=None, weights=weights)
-      st.text(weights)
+      st.success("Матрица рассчитана")
 
-    #### Калстеризуем
+    #### Кластеризуем
     st.subheader("Кластеризация на основе расстояния Говера")
     option_method = st.radio("Метод кластеризации",
                               ("HDBSCAN", "HAC"),
                               horizontal=True)
-    
-    if st.button("Начать кластеризацию"):
 
-      if option_method=="HDBSCAN":
-        option_method=="hdbscan"
+    if st.button("Начать кластеризацию"):
+      if hasattr(st.session_state, "D"):
+        st.session_state.labels = clusterize(X.iloc[st.session_state.idx_S], st.session_state.D, method=option_method, max_k=20)
       else:
-        option_method=="hac"
-      labels = clusterize(X.iloc[st.session_state.idx_S], st.session_state.D, method="hac", max_k=20)
-      st.text(labels)
+        st.error("Рассчитайте расстонния Говера")
+
+      # --- FAISS HNSW index если размер выборки > 8000 ---
+      if X.shape[0] > 8000:
+        st.subheader("FAISS HNSW разметка лейблов")
+        option_FAISS = st.radio(
+            "Делаем FAISS разметку на осташуюся выборку или пока работаем с сэмплом 8000",
+            ("FAISS разметка", "Продолжаем работу с сэмплом"),
+            horizontal=True)
+        if option_FAISS == "FAISS разметка":
+          if st.button("Начать FAISS разметку"):
+            X_vectorized = vectorize(X, num_cols, cat_cols)
+            X_S = X_vectorized[st.session_state.idx_S]
+            X_rest = X_vectorized[idx_rest]
+            index = build_faiss_hnsw(X_S, M=32, efSearch=64)
+
+            # --- assign остальных ---
+            labels_rest, dist_rest, is_ood = assign_faiss(index, X_rest, st.session_state.labels, k=3)
+
+            # --- собрать результат ---
+            result = df.copy()
+            result['cluster'] = np.nan
+            result['assign_distance'] = np.nan
+            result['is_OOD'] = False
+
+            # метки для подвыборки
+            result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
+            result.loc[st.session_state.idx_S, 'assign_distance'] = 0.0
+            result.loc[st.session_state.idx_S, 'is_OOD'] = False
+
+            # метки для остальных
+            result.loc[idx_rest, 'cluster'] = labels_rest
+            result.loc[idx_rest, 'assign_distance'] = dist_rest
+            result.loc[idx_rest, 'is_OOD'] = is_ood
+            st.session_state.result = result
+            st.success(f"Кластеризация методом {option_method} с доразметкой FAISS выполнена успешно")
+      else:
+        result = df.copy()
+        result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
+        st.session_state.result = result
+        st.success(f"Кластеризация методом {option_method} выполнена успешно")
+
+    ##### Результат кластеризации
+    if hasattr(st.session_state, "result"):
+      st.subheader("Кластеризованные данные")
+      st.write(f"Отображается {len(st.session_state.result.head(500))} из {len(st.session_state.result)} строк")
+      st.dataframe(st.session_state.result.head(500))
+
+    st.header("Анализ кластеризации")
+    if st.button("Начать анализ"):
+      st.session_state.summary, st.session_state.super_tree, st.session_state.importances = analyze_all_clusters(st.session_state.result, target, num_cols, cat_cols)
+    
+    if hasattr(st.session_state, "super_tree"):
+      st.subheader("Правила, объясняющие кластеры")
+      if "super_tree_html" not in st.session_state:
+        with NamedTemporaryFile(suffix=".html", delete=False) as f:
+          st.session_state.super_tree.save_html(f.name)
+          st.session_state.super_tree_html = open(f.name, "r", encoding="utf-8").read()
+      
+      st.text(f"Распределение целевого признака {target} по кластерам:")
+      st.dataframe(st.session_state.summary)
+      st.subheader("\n Главные признаки, формирующие кластеры:")
+      st.dataframe(st.session_state.importances.head(10))
+      html(st.session_state.super_tree_html, height=650)
+
+    option_cluster = st.selectbox("Выберите кластер для внутрикластерного анализа", st.session_state.result['cluster'].unique())
+    if st.button("Внутрикластерный анализ"):
+      cluster_tree = analyze_within_clusters(st.session_state.result, target, num_cols, cat_cols, cluster=option_cluster)
+      with NamedTemporaryFile(suffix=".html", delete=False) as f1:
+        cluster_tree.save_html(f1.name)
+        html(f1.read(), height=650)
+
 else:
     st.info("Загрузите файл для начала работы")
