@@ -19,9 +19,9 @@
 Streamlit link: https://mixed-data-clustering.streamlit.app/
 
 Или Docker:
-'''
+```
 git clone https://github.com/apopodko/Mixed_data_clustering.git
 cd Mixed_data_clustering
 docker build -t Mixed_data_clustering .
 docker run -p 8501:8501 Mixed_data_clustering
-'''
+```
