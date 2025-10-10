@@ -14,4 +14,11 @@
 
 Для анализа результатов строятся объясняющие деревья построения кластеров и внутрикластерные объясняющие деревья для исследования влияния объектов и их признаков, сформировавших кластер.
 
+Попробовать:
 Streamlit link: https://mixed-data-clustering.streamlit.app/
+
+Или Docker:
+git clone https://github.com/apopodko/Mixed_data_clustering.git
+cd Mixed_data_clustering
+docker build -t Mixed_data_clustering .
+docker run -p 8501:8501 Mixed_data_clustering
