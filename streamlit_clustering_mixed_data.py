@@ -37,11 +37,11 @@ from streamlit.components.v1 import html
 import faiss
 
 # Расчет ренжей для расстояния Говера
-def compute_numeric_ranges(df, num_cols, method='minmax', iqr_multiplier=1.5):
+def compute_numeric_ranges(df, num_cols, method='minmax'):
     """
     Возвращает словарь {col: range} для нормализации при расчете расстояния Говера
       - 'minmax'  : range = max - min
-      - 'iqr' : range = (Q3-Q1) * iqr_multiplier
+      - 'iqr' : range = (Q3-Q1)
     """
     ranges = {}
     for c in num_cols:
@@ -55,7 +55,7 @@ def compute_numeric_ranges(df, num_cols, method='minmax', iqr_multiplier=1.5):
         elif method == 'iqr':
             q1 = np.percentile(col, 25)
             q3 = np.percentile(col, 75)
-            r = float((q3 - q1) * iqr_multiplier)
+            r = float((q3 - q1))
         else:
             raise ValueError("unknown method")
 
@@ -164,10 +164,9 @@ def clusterize(df, D, method="HDBSCAN", max_k=20):
       d = df.shape[1]
       # specify parameters and distributions to sample from
       param_grid = [
-          {"min_cluster_size": mcs, "min_samples": ms, "cluster_selection_method": csm}
-          for mcs in [10, 20, 30, 50, 100]
-          for ms in [5, 10, 20, 30, 50, 100]
-          for csm in ["eom", "leaf"]
+          {"min_cluster_size": mcs, "min_samples": ms}
+          for mcs in [10, 20, 30, 50]
+          for ms in [10, 20, 30, 50]
       ]
 
       for params in param_grid:
@@ -195,7 +194,7 @@ def clusterize(df, D, method="HDBSCAN", max_k=20):
 
       # поиск оптимального k по silhouette
       best_k, best_score, best_labels = None, -1, None
-      for k in range(2, min(max_k, len(df)//100)):
+      for k in range(2, min(max_k, len(df)//10)):
           labels = fcluster(Z, k, criterion="maxclust")
           if len(np.unique(labels)) < 2:
               continue
@@ -363,11 +362,11 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
           ["count", "mean", "std", "min", "max", "median"]
       ).sort_values("mean", ascending=False)
       summary.columns = [
-          "Количество объектов", 
-          "Среднее значение таргета", 
-          "Стд. откл.", 
-          "Минимальное значение", 
-          "Максимальное", 
+          "Количество объектов",
+          "Среднее значение таргета",
+          "Стд. откл.",
+          "Минимальное значение",
+          "Максимальное",
           "Медиана"
       ]
 
@@ -395,7 +394,7 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
       )
       summary.columns = [f"{col} (% в кластере)" for col in summary.columns]
       summary["Самая частая категория"] = mode_df.set_index(cluster_col)["most_frequent"]
-      summary["Всего объектов"] = counts.groupby(cluster_col)["count"].sum().values    
+      summary["Всего объектов"] = counts.groupby(cluster_col)["count"].sum().values
 
     # Объяснение кластеров через DecisionTreeClassifier
     X = df[num_cols + cat_cols]
@@ -435,7 +434,7 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
 
 ######
 ### Общий анализ внутри кластеров
-def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", cluster=0, max_depth=6):
+def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", cluster=0, max_depth=5):
     results = {}
     df.reset_index(inplace=True, drop=True)
 
@@ -499,7 +498,7 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
         y_sub.reset_index(drop=True),
         model.named_steps["prep"].get_feature_names_out(),
         target_names=class_names)
-    
+
     return super_tree
 
 ######################## Streamlit layout ##################
@@ -545,19 +544,27 @@ if uploaded_file is not None:
 
     st.subheader("Предпросмотр данных и их типы")
     st.dataframe(df.head())
+    st.write("Внимательно проверьте типы признаков")
     st.dataframe(df.dtypes.to_frame().T)
 
     # Подготовка данных
     st.subheader("Подготовка данных")
 
+    # === 3. Выбор столбцов для приведения к числовому типу ===
+    to_num_cols = st.multiselect("Выберите признаки для приведения к числовому типу",
+                                df.columns.tolist())    
+    df[to_num_cols] = df[to_num_cols].apply(pd.to_numeric, errors='coerce')
+
     # === 4. Выбор столбцов для удаления ===
-    drop_cols = st.multiselect("Выберите признаки для удаления",
+    drop_cols = st.multiselect("Выберите признаки для удаления, и не забудьте про индексные признаки",
                                df.columns.tolist())
     if drop_cols:
         df = df.drop(columns=drop_cols)
 
     # === 3. Выбор таргета ===
     target = st.selectbox("Выберите целевой признак", df.columns.tolist())
+    if  df[target].nunique() > 1000 and pd.api.types.is_object_dtype(df[target]):
+      st.error("Целевой признак с очень высокой кардинальностью, выберите другой признак")
     df.dropna(subset=[target], inplace=True)
 
     # === 5. Фильтрация ===
@@ -627,34 +634,43 @@ if uploaded_file is not None:
 
     # === 7. Результат ===
     st.subheader("Отфильтрованные данные")
+
+    st.write("У признаков с кардинальностью больше 100 редкие категории автоматически переназначаются на 'Other'!")
+    for col in cat_cols:
+      if df[col].nunique() > 100:
+        top_cat = df[col].value_counts().head(20).index.tolist()
+        df[col] = np.where(df[col].isin(top_cat), df[col], 'Other')
+
+    df = df.reset_index(drop=True)
     st.write(f"Отображается {len(df.head(500))} из {len(df)} строк")
     st.dataframe(df.head(500))
-    datetime_columns = df.select_dtypes(include=[np.datetime64]).columns
+    st.write("Еще раз внимательно проверьте типы признаков")
+    st.dataframe(df.dtypes.to_frame().T)
+
     # Сохраняем данные для кластеризации
+    datetime_columns = df.select_dtypes(include=[np.datetime64]).columns
     X = df.drop(target, axis=1)
     X = X.drop(datetime_columns, axis=1)
     y = df[target]
-
 
     ############# Кластеризация ################################
     st.header("Кластеризация")
     ### Считаем расстояние Говера
     st.subheader("Рассчет расстояния Говера")
 
-    option_weights = st.radio("Рассчитываем веса на основе взаимной ифнормации с целевым признаком?",
-                              ("Да", "Нет"),
+    option_weights = st.radio("Рассчитываем веса на основе взаимной информации с целевым признаком?",
+                              ("Нет", "Да"),
                               horizontal=True)
 
     if st.button("Рассчитать расстояния Говера"):
-
-
       # Готовим индексы для FAISS, на случай, несли выборка будет больше 8000
       N = X.shape[0]
       S = min(8000, N)
       idx_all = np.arange(N)
       idx_S = np.random.choice(idx_all, size=S, replace=False)
       idx_rest = np.setdiff1d(idx_all, idx_S)
-
+      st.session_state.idx_S = idx_S
+      st.session_state.idx_rest = idx_rest
       # Рассчитываем веса для расстояния Говера
       if option_weights == "Да":
         weights = compute_feature_weights(X.iloc[idx_S], y.iloc[idx_S], num_cols, cat_cols)
@@ -662,8 +678,13 @@ if uploaded_file is not None:
         weights = None
 
       # Рассчитываем расстояния Говера
-      st.session_state.idx_S = idx_S
-      st.session_state.D = compute_gower_matrix(X.iloc[idx_S], num_cols, cat_cols, numeric_ranges=None, weights=weights)
+      st.session_state.D = compute_gower_matrix(
+          X.iloc[idx_S],
+          num_cols,
+          cat_cols,
+          numeric_ranges=None,
+          weights=weights
+      )
       st.success("Матрица рассчитана")
 
     #### Кластеризуем
@@ -674,46 +695,51 @@ if uploaded_file is not None:
 
     if st.button("Начать кластеризацию"):
       if hasattr(st.session_state, "D"):
-        st.session_state.labels = clusterize(X.iloc[st.session_state.idx_S], st.session_state.D, method=option_method, max_k=20)
+        st.session_state.labels = clusterize(
+            X.iloc[st.session_state.idx_S],
+            st.session_state.D,
+            method=option_method
+        )
       else:
         st.error("Рассчитайте расстонния Говера")
 
       # --- FAISS HNSW index если размер выборки > 8000 ---
       if X.shape[0] > 8000:
         st.subheader("FAISS HNSW разметка лейблов")
-        option_FAISS = st.radio(
-            "Делаем FAISS разметку на осташуюся выборку или пока работаем с сэмплом 8000",
-            ("FAISS разметка", "Продолжаем работу с сэмплом"),
-            horizontal=True)
-        if option_FAISS == "FAISS разметка":
-          if st.button("Начать FAISS разметку"):
-            X_vectorized = vectorize(X, num_cols, cat_cols)
-            X_S = X_vectorized[st.session_state.idx_S]
-            X_rest = X_vectorized[idx_rest]
-            index = build_faiss_hnsw(X_S, M=32, efSearch=64)
+        X_vectorized = vectorize(X, num_cols, cat_cols)
+        X_S = X_vectorized[st.session_state.idx_S]
+        X_rest = X_vectorized[st.session_state.idx_rest]
+        index = build_faiss_hnsw(X_S, M=32, efSearch=64)
 
-            # --- assign остальных ---
-            labels_rest, dist_rest, is_ood = assign_faiss(index, X_rest, st.session_state.labels, k=3)
+        # --- assign остальных ---
+        labels_rest, dist_rest, is_ood = assign_faiss(index,
+                                                      X_rest,
+                                                      st.session_state.labels,
+                                                      k=3
+                                                      )
 
-            # --- собрать результат ---
-            result = df.copy()
-            result['cluster'] = np.nan
-            result['assign_distance'] = np.nan
-            result['is_OOD'] = False
+        # --- собрать результат ---
+        result = df.copy()
+        result['cluster'] = np.nan
+        result['assign_distance'] = np.nan
+        result['is_OOD'] = False
 
-            # метки для подвыборки
-            result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
-            result.loc[st.session_state.idx_S, 'assign_distance'] = 0.0
-            result.loc[st.session_state.idx_S, 'is_OOD'] = False
+        # метки для подвыборки
+        result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
+        result.loc[st.session_state.idx_S, 'assign_distance'] = 0.0
+        result.loc[st.session_state.idx_S, 'is_OOD'] = False
 
-            # метки для остальных
-            result.loc[idx_rest, 'cluster'] = labels_rest
-            result.loc[idx_rest, 'assign_distance'] = dist_rest
-            result.loc[idx_rest, 'is_OOD'] = is_ood
-            st.session_state.result = result
-            st.success(f"Кластеризация методом {option_method} с доразметкой FAISS выполнена успешно")
+        # метки для остальных
+        result.loc[st.session_state.idx_rest, 'cluster'] = labels_rest
+        result.loc[st.session_state.idx_rest, 'assign_distance'] = dist_rest
+        result.loc[st.session_state.idx_rest, 'is_OOD'] = is_ood
+        st.session_state.result = result
+        st.success(f"Кластеризация методом {option_method} с доразметкой FAISS выполнена успешно")
+
       else:
         result = df.copy()
+        st.write(f"Отображается {len(result.head(500))} из {len(result)} строк")
+        st.dataframe(result.head(500))    
         result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
         st.session_state.result = result
         st.success(f"Кластеризация методом {option_method} выполнена успешно")
@@ -728,13 +754,13 @@ if uploaded_file is not None:
       if st.button("Начать анализ"):
         st.session_state.summary, st.session_state.super_tree, st.session_state.importances = (
             analyze_all_clusters(
-                st.session_state.result, 
-                target, 
-                num_cols, 
+                st.session_state.result,
+                target,
+                num_cols,
                 cat_cols
                 )
         )
-        
+
         with NamedTemporaryFile(suffix=".html", delete=False) as f:
           st.session_state.super_tree.save_html(f.name)
           st.session_state.super_tree_html = open(f.name, "r", encoding="utf-8").read()
@@ -750,15 +776,15 @@ if uploaded_file is not None:
           html(st.session_state.super_tree_html, height=650)
 
       option_cluster = st.selectbox(
-          "Выберите кластер для внутрикластерного анализа", 
+          "Выберите кластер для внутрикластерного анализа",
           st.session_state.result['cluster'].unique()
       )
       if st.button("Внутрикластерный анализ"):
         cluster_tree = analyze_within_clusters(
-            st.session_state.result, 
-            target, 
-            num_cols, 
-            cat_cols, 
+            st.session_state.result,
+            target,
+            num_cols,
+            cat_cols,
             cluster=option_cluster
         )
         with NamedTemporaryFile(suffix=".html", delete=False) as f1:
