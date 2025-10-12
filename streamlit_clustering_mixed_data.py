@@ -560,25 +560,53 @@ if uploaded_file is not None:
     st.subheader("Подготовка данных")
 
     # === 3. Выбор столбцов для приведения к числовому типу ===
+
+    help_to_num = '''Выберите признаки, которые по вашему мнению должны быть числовыми, 
+                    но они определяются как object скорее всего из-за наличия текстовых 
+                    случайных значений или ошибок'''
+
     to_num_cols = st.multiselect("Выберите признаки для приведения к числовому типу",
-                                df.columns.tolist())
+                                 df.columns.tolist(),
+                                 help=help_to_num 
+                                )
     df[to_num_cols] = df[to_num_cols].apply(pd.to_numeric, errors='coerce')
 
     # === 4. Выбор столбцов для удаления ===
+
+    help_drop = '''Выбрасывает ненужные для анализа и кластеризации признаки'''
+
     drop_cols = st.multiselect('''Выберите признаки для удаления, и не забудьте 
                                   про индексные признаки''',
-                               df.columns.tolist())
+                               df.columns.tolist(),
+                               help=help_drop
+                              )
     if drop_cols:
         df = df.drop(columns=drop_cols)
 
     # === 3. Выбор таргета ===
-    target = st.selectbox("Выберите целевой признак", df.columns.tolist())
+
+    help_target = '''Для кластеризации наличие целевого признака необязательно, 
+                    но для статистического анализа он необходим.'''
+
+    target = st.selectbox(
+        "Выберите целевой признак", 
+        df.columns.tolist(),
+        help=help_target)
+
     if  df[target].nunique() > 1000 and pd.api.types.is_object_dtype(df[target]):
       st.error("Целевой признак с очень высокой кардинальностью, выберите другой признак")
     df.dropna(subset=[target], inplace=True)
 
     # === 5. Фильтрация ===
-    filter_cols = st.multiselect("Выберите признаки для фильтра", df.columns.tolist())
+
+    help_filter = '''Отбирает признаки, по которым можно будет отфильтровать данные, 
+                      в том числе и по датам'''
+
+    filter_cols = st.multiselect(
+        "Выберите признаки для фильтра", 
+        df.columns.tolist(),
+        help=help_filter
+    )
     if filter_cols:
 
       with st.expander("Открыть фильтры"):
@@ -624,13 +652,15 @@ if uploaded_file is not None:
                 .drop(target, axis=1)
                 .select_dtypes(exclude=[np.number, np.datetime64])
                 .columns.tolist())
-        
+
+    help_card_cat = '''Для повышения качества кластеризации в категориальных признаках 
+                      можно оставить топ-10 категорий, а остальные заменить на 'Other'''
+
     cat_cols_to_reduce = st.multiselect(
         "Выберите категориальные признаки для снижения кардинальности", 
-        cat_cols
+        cat_cols,
+        help=help_card_cat
     )
-    st.info('''Для повышения качества кластеризации в категориальных признаках 
-              можно оставить топ-10 категорий, а остальные заменить на 'Other''')
     for col in cat_cols_to_reduce:
       top_cat = df[col].value_counts().head(10).index.tolist()
       df[col] = np.where(df[col].isin(top_cat), df[col], col+'_Other')
@@ -639,6 +669,7 @@ if uploaded_file is not None:
     missing_option = st.radio("Что делать с пропусками в данных?",
       ("Заполнить медианой и MISSING", "Выбросить объекты с пропусками"),
       horizontal=True)
+
     num_cols = (df
                 .drop(target, axis=1)
                 .select_dtypes(include=[np.number])
@@ -676,9 +707,12 @@ if uploaded_file is not None:
 
     # Сохраняем данные для кластеризации
     datetime_columns = df.select_dtypes(include=[np.datetime64]).columns
-    X = df.drop(target, axis=1)
+    if target:
+      y = df[target]
+      X = df.drop(target, axis=1)
+    else:
+      y = None
     X = X.drop(datetime_columns, axis=1)
-    y = df[target]
 
     ############# Кластеризация ################################
     st.header("2. Кластеризация")
