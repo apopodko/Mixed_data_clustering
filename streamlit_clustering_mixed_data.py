@@ -505,8 +505,9 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 
 st.set_page_config(page_title="Анализ и фильтрация данных", layout="wide")
 
-st.title("Анализ и фильтрация данных")
+st.title("Кластеризация смешанных данных")
 
+st.header("Анализ и фильтрация данных")
 # === 1. Загрузка файла ===
 uploaded_file = st.file_uploader("Загрузите CSV или Excel файл", type=["csv", "xlsx"])
 with st.expander("Если есть проблемы с форматом признаков или разделителем"):
@@ -552,7 +553,7 @@ if uploaded_file is not None:
 
     # === 3. Выбор столбцов для приведения к числовому типу ===
     to_num_cols = st.multiselect("Выберите признаки для приведения к числовому типу",
-                                df.columns.tolist())    
+                                df.columns.tolist())
     df[to_num_cols] = df[to_num_cols].apply(pd.to_numeric, errors='coerce')
 
     # === 4. Выбор столбцов для удаления ===
@@ -609,6 +610,22 @@ if uploaded_file is not None:
                       )
                       df = df[df[col].isin(selected_vals)]
 
+    # === 5.1 Снижение кардинальности категориальных признаков ========
+    cat_cols = (df
+                .drop(target, axis=1)
+                .select_dtypes(exclude=[np.number, np.datetime64])
+                .columns.tolist())
+        
+    cat_cols_to_reduce = st.multiselect(
+        "Выберите категориальные признаки для снижения кардинальности", 
+        cat_cols
+    )
+    st.write("Для повышения качества кластеризации в категориальных признаках", 
+             "можно оставить топ-10 категорий, а остальные заменить на 'Other'")
+    for col in cat_cols_to_reduce:
+      top_cat = df[col].value_counts().head(10).index.tolist()
+      df[col] = np.where(df[col].isin(top_cat), df[col], col+'_Other')
+
     # === 6. Работа с пропусками ===
     missing_option = st.radio("Что делать с пропусками в данных?",
       ("Заполнить медианой и MISSING", "Выбросить объекты с пропусками"),
@@ -639,7 +656,7 @@ if uploaded_file is not None:
     for col in cat_cols:
       if df[col].nunique() > 100:
         top_cat = df[col].value_counts().head(20).index.tolist()
-        df[col] = np.where(df[col].isin(top_cat), df[col], 'Other')
+        df[col] = np.where(df[col].isin(top_cat), df[col], col+'_Other')
 
     df = df.reset_index(drop=True)
     st.write(f"Отображается {len(df.head(500))} из {len(df)} строк")
@@ -739,7 +756,7 @@ if uploaded_file is not None:
       else:
         result = df.copy()
         st.write(f"Отображается {len(result.head(500))} из {len(result)} строк")
-        st.dataframe(result.head(500))    
+        st.dataframe(result.head(500))
         result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
         st.session_state.result = result
         st.success(f"Кластеризация методом {option_method} выполнена успешно")
