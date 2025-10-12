@@ -298,7 +298,8 @@ def assign_faiss(index, X_rest, labels_S, k=3, ood_threshold=None, weighted=True
         X_rest : новые точки из некластеризованной выборки
         labels_S : метки кластеров
         k : число ближайших соседей
-        ood_threshold : float или None, порог для OOD; если None - вычисляется как 99-й перцентиль расстояний в S
+        ood_threshold : float или None, порог для OOD; если None - вычисляется 
+        как 99-й перцентиль расстояний в S
         weighted : bool, использовать взвешенное голосование по расстоянию
 
     output:
@@ -445,7 +446,6 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
         ]
     )
 
-    st.header("Внутрикластерный анализ")
     # Анализ таргета внутри каждого кластера
     target_results = {}
     subset = df[df[cluster_col] == cluster]
@@ -489,7 +489,7 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 
     target_results[cluster] = importances
 
-    st.subheader(f"\n Кластер {cluster}: факторы и правила, влияющие на таргет")
+    st.subheader(f"\n Кластер {cluster}: факторы и правила, влияющие на целевой признак {target_col}")
     st.dataframe(importances.head(5))
 
     super_tree = SuperTree(
@@ -506,11 +506,17 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 st.set_page_config(page_title="Кластеризация смешанных данных", layout="wide")
 
 st.title("Кластеризация смешанных данных")
+st.write('''Данное приложение позволяет кластеризовать смешанные табличные данные 
+         (числовые и категориальные) с целевым признаком с использованием HDBSCAN или 
+         Hierarchical agglomerative clustering, где используется предрассчитанная 
+         метрика расстояния на основе Gower Distance. После кластеризации есть возможность 
+         провести анализ построенных кластеров с помощью решающих деревьев и оценить статистику.''')
 
-st.header("Анализ и фильтрация данных")
+st.header("1. Анализ и фильтрация данных")
 # === 1. Загрузка файла ===
 uploaded_file = st.file_uploader("Загрузите CSV или Excel файл", type=["csv", "xlsx"])
-with st.expander("Если есть проблемы с форматом признаков или разделителем"):
+with st.expander('''Если при импорте возникли проблемы с форматом признаков 
+                    попробуйте выбрать другой CSV или числовой разделитель'''):
   option_decimal = st.radio(
       "Выберите десятичный разделитель",
       (".", ","),
@@ -545,7 +551,9 @@ if uploaded_file is not None:
 
     st.subheader("Предпросмотр данных и их типы")
     st.dataframe(df.head())
-    st.write("Внимательно проверьте типы признаков")
+    st.warning('''Внимательно проверьте типы признаков для успешной кластеризации. 
+                  Далее будет возможность привести признаки к числовому типу.''',
+               icon="⚠️")
     st.dataframe(df.dtypes.to_frame().T)
 
     # Подготовка данных
@@ -557,7 +565,8 @@ if uploaded_file is not None:
     df[to_num_cols] = df[to_num_cols].apply(pd.to_numeric, errors='coerce')
 
     # === 4. Выбор столбцов для удаления ===
-    drop_cols = st.multiselect("Выберите признаки для удаления, и не забудьте про индексные признаки",
+    drop_cols = st.multiselect('''Выберите признаки для удаления, и не забудьте 
+                                  про индексные признаки''',
                                df.columns.tolist())
     if drop_cols:
         df = df.drop(columns=drop_cols)
@@ -620,8 +629,8 @@ if uploaded_file is not None:
         "Выберите категориальные признаки для снижения кардинальности", 
         cat_cols
     )
-    st.write("Для повышения качества кластеризации в категориальных признаках", 
-             "можно оставить топ-10 категорий, а остальные заменить на 'Other'")
+    st.info('''Для повышения качества кластеризации в категориальных признаках 
+              можно оставить топ-10 категорий, а остальные заменить на 'Other''')
     for col in cat_cols_to_reduce:
       top_cat = df[col].value_counts().head(10).index.tolist()
       df[col] = np.where(df[col].isin(top_cat), df[col], col+'_Other')
@@ -652,7 +661,8 @@ if uploaded_file is not None:
     # === 7. Результат ===
     st.subheader("Отфильтрованные данные")
 
-    st.write("У признаков с кардинальностью больше 100 редкие категории автоматически переназначаются на 'Other'!")
+    st.warning('''У признаков с кардинальностью больше 100 редкие категории 
+                  автоматически переназначаются на 'Other'!''')
     for col in cat_cols:
       if df[col].nunique() > 100:
         top_cat = df[col].value_counts().head(20).index.tolist()
@@ -661,7 +671,7 @@ if uploaded_file is not None:
     df = df.reset_index(drop=True)
     st.write(f"Отображается {len(df.head(500))} из {len(df)} строк")
     st.dataframe(df.head(500))
-    st.write("Еще раз внимательно проверьте типы признаков")
+    st.info("Еще раз внимательно проверьте типы признаков")
     st.dataframe(df.dtypes.to_frame().T)
 
     # Сохраняем данные для кластеризации
@@ -671,15 +681,37 @@ if uploaded_file is not None:
     y = df[target]
 
     ############# Кластеризация ################################
-    st.header("Кластеризация")
+    st.header("2. Кластеризация")
+    st.write('''Данная часть разбита на 2 последовательных тяжелых вычислительных этапа.
+                Сначала рассчитываем метрики расстояний, далее используем ее в 
+                кластеризации данных.  
+                При смене метода кластеризации, метрику расстояния пересчитывать необязательно.''')
     ### Считаем расстояние Говера
-    st.subheader("Рассчет расстояния Говера")
+    help_gower = '''Расстояние Гауэра — это мера сходства, используемая для кластеризации 
+                  наборов данных смешанного типа и вычисления степени сходства между 
+                  точками данных на основе комбинации числовых, категориальных и порядковых 
+                  атрибутов. Метод работает путём стандартизации степени сходства каждого 
+                  признака в диапазоне от 0 до 1 с последующим вычислением средневзвешенного 
+                  значения этих значений.'''
 
-    option_weights = st.radio("Рассчитываем веса на основе взаимной информации с целевым признаком?",
+    st.subheader("Расчет метрики расстояния (Gower Distance)", help=help_gower)
+    st.write('''Для дальнейшей кластеризации необходимо рассчитать метрику расстояний 
+                между объектами. Сначала попробуйте произвести расчет без учета весов.''')
+
+    help_weights = '''Алгоритм может автоматически рассчитывать веса на основе важности 
+                      признаков. Это достигается с помощью метода взаимной информации, 
+                      который помогает сбалансировать вклад различных типов признаков 
+                      (непрерывных и категориальных). Он корректирует дисбаланс 
+                      переменных: устраняет недостаток невзвешенной формулы, которая 
+                      может быть обусловлена ​​большим количеством непрерывных или 
+                      категориальных переменных.'''
+
+    option_weights = st.radio("Учитываем веса на основе взаимной информации с целевым признаком?",
                               ("Нет", "Да"),
-                              horizontal=True)
+                              horizontal=True,
+                              help=help_weights)
 
-    if st.button("Рассчитать расстояния Говера"):
+    if st.button("Рассчитать метрику"):
       # Готовим индексы для FAISS, на случай, несли выборка будет больше 8000
       N = X.shape[0]
       S = min(8000, N)
@@ -705,10 +737,28 @@ if uploaded_file is not None:
       st.success("Матрица рассчитана")
 
     #### Кластеризуем
-    st.subheader("Кластеризация на основе расстояния Говера")
-    option_method = st.radio("Метод кластеризации",
-                              ("HDBSCAN", "HAC"),
-                              horizontal=True)
+    st.subheader("Кластеризация на основе рассчитанной метрики")
+
+    help_cluster = '''1.HDBSCAN (медленный вариант) — это алгоритм кластеризации, 
+                      основанный на плотности данных. Он идентифицирует кластеры, 
+                      строя минимальное остовное дерево на основе взвешенного графа 
+                      точек данных, преобразуя его в иерархию кластеров, а затем 
+                      выбирая из неё стабильные кластеры на основе их устойчивости 
+                      на разных уровнях плотности. Лучшие гиперпарматры подбираются
+                      автоматически с оценкой через Validity Index.  
+                      2.HAC (быстрый вариант) - иерархическая агломеративная 
+                      кластеризация. Метод кластеризации «снизу вверх», который 
+                      начинается с того, что каждая точка данных представляет собой 
+                      отдельный кластер, и итеративно объединяет ближайшие пары 
+                      кластеров, пока не останется только один кластер. В результате 
+                      получается древовидная структура, называемая дендрограммой, 
+                      которая визуализирует иерархию слияний. Лучшее количество 
+                      кластеров подбирается автоматически с оценкой через Silhoutte score'''
+
+    option_method = st.radio("Выберите метод кластеризации",
+                             ("HDBSCAN", "HAC"),
+                             horizontal=True,
+                             help=help_cluster)
 
     if st.button("Начать кластеризацию"):
       if hasattr(st.session_state, "D"):
@@ -755,15 +805,13 @@ if uploaded_file is not None:
 
       else:
         result = df.copy()
-        st.write(f"Отображается {len(result.head(500))} из {len(result)} строк")
-        st.dataframe(result.head(500))
         result.loc[st.session_state.idx_S, 'cluster'] = st.session_state.labels
         st.session_state.result = result
         st.success(f"Кластеризация методом {option_method} выполнена успешно")
 
     ##### Результат кластеризации
     if hasattr(st.session_state, "result"):
-      st.subheader("Кластеризованные данные")
+      st.subheader("Результат")
       st.write(f"Отображается {len(st.session_state.result.head(500))}", 
                f"из {len(st.session_state.result)} строк")
       st.dataframe(st.session_state.result.head(500))
@@ -775,8 +823,11 @@ if uploaded_file is not None:
             mime="text/csv",
         )
 
-      st.header("Анализ кластеризации")
-      if st.button("Начать анализ"):
+      help_analyze = '''Анализ построенных кластеров с помощью решающих деревьев 
+                        и статистические/количественные оценки'''
+
+      st.header("3. Анализ кластеризации", help=help_analyze)
+      if st.button("Начать анализ", key="1"):
         st.session_state.summary, st.session_state.super_tree, st.session_state.importances = (
             analyze_all_clusters(
                 st.session_state.result,
@@ -791,20 +842,28 @@ if uploaded_file is not None:
           st.session_state.super_tree_html = open(f.name, "r", encoding="utf-8").read()
 
       if hasattr(st.session_state, "super_tree"):
-        st.subheader("Правила, объясняющие кластеры")
 
+        help_overlclust = '''Смотрим как целевой признак распределен по кластерам,
+                             какие признаки формируют кластер'''
+
+        st.subheader("Общекластерный анализ", help=help_overlclust)
         st.text(f"Распределение целевого признака {target} по кластерам:")
         st.dataframe(st.session_state.summary)
-        st.subheader("\n Главные признаки, формирующие кластеры:")
+        st.text("\n Главные признаки, формирующие кластеры:")
         st.dataframe(st.session_state.importances.head(10))
+        st.text("Правила, объясняющие кластеры")
         if "super_tree_html" in st.session_state:
           html(st.session_state.super_tree_html, height=650)
 
+      help_intraclust = '''Смотрим какие признаки влияют на целевой признак 
+                           внутри каждого кластера'''
+
+      st.subheader("Внутрикластерный анализ", help=help_intraclust)
       option_cluster = st.selectbox(
           "Выберите кластер для внутрикластерного анализа",
           st.session_state.result['cluster'].unique()
       )
-      if st.button("Внутрикластерный анализ"):
+      if st.button("Начать анализ", key="2"):
         cluster_tree = analyze_within_clusters(
             st.session_state.result,
             target,
