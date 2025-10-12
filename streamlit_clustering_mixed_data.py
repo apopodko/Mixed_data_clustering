@@ -503,7 +503,7 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 
 ######################## Streamlit layout ##################
 
-st.set_page_config(page_title="Анализ и фильтрация данных", layout="wide")
+st.set_page_config(page_title="Кластеризация смешанных данных", layout="wide")
 
 st.title("Кластеризация смешанных данных")
 
@@ -764,8 +764,16 @@ if uploaded_file is not None:
     ##### Результат кластеризации
     if hasattr(st.session_state, "result"):
       st.subheader("Кластеризованные данные")
-      st.write(f"Отображается {len(st.session_state.result.head(500))} из {len(st.session_state.result)} строк")
+      st.write(f"Отображается {len(st.session_state.result.head(500))}", 
+               f"из {len(st.session_state.result)} строк")
       st.dataframe(st.session_state.result.head(500))
+
+      st.download_button(
+            label="Скачать результаты как CSV",
+            data=st.session_state.result.to_csv(index=False).encode('utf-8'),
+            file_name="result.csv",
+            mime="text/csv",
+        )
 
       st.header("Анализ кластеризации")
       if st.button("Начать анализ"):
