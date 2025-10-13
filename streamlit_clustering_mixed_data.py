@@ -298,7 +298,7 @@ def assign_faiss(index, X_rest, labels_S, k=3, ood_threshold=None, weighted=True
         X_rest : новые точки из некластеризованной выборки
         labels_S : метки кластеров
         k : число ближайших соседей
-        ood_threshold : float или None, порог для OOD; если None - вычисляется 
+        ood_threshold : float или None, порог для OOD; если None - вычисляется
         как 99-й перцентиль расстояний в S
         weighted : bool, использовать взвешенное голосование по расстоянию
 
@@ -357,45 +357,49 @@ def assign_faiss(index, X_rest, labels_S, k=3, ood_threshold=None, weighted=True
 def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", max_depth=6):
     results = {}
     df.reset_index(inplace=True, drop=True)
-    # Распределение таргета по кластерам
-    if pd.api.types.is_numeric_dtype(df[target_col]):
-      summary = df.groupby(cluster_col)[target_col].agg(
-          ["count", "mean", "std", "min", "max", "median"]
-      ).sort_values("mean", ascending=False)
-      summary.columns = [
-          "Количество объектов",
-          "Среднее значение таргета",
-          "Стд. откл.",
-          "Минимальное значение",
-          "Максимальное",
-          "Медиана"
-      ]
+    if target_col!="No Target":
+      # Распределение таргета по кластерам
+      if pd.api.types.is_numeric_dtype(df[target_col]):
+        summary = df.groupby(cluster_col)[target_col].agg(
+            ["count", "mean", "std", "min", "max", "median"]
+        ).sort_values("mean", ascending=False)
+        summary.columns = [
+            "Количество объектов",
+            "Среднее значение таргета",
+            "Стд. откл.",
+            "Минимальное значение",
+            "Максимальное",
+            "Медиана"
+        ]
 
+      else:
+        counts = (
+            df.groupby([cluster_col, target_col])
+            .size()
+            .reset_index(name="count")
+        )
+
+        total = counts.groupby(cluster_col)["count"].transform("sum")
+        counts["share"] = (counts["count"] / total * 100).round(2)
+
+        # Наиболее частая категория в каждом кластере
+        mode_df = (
+            counts.sort_values(["cluster", "count"], ascending=[True, False])
+            .drop_duplicates(subset=[cluster_col])
+            .rename(columns={target_col: "most_frequent"})
+            .loc[:, [cluster_col, "most_frequent"]]
+        )
+
+        summary = (
+            counts.pivot(index=cluster_col, columns=target_col, values="share")
+            .fillna(0)
+        )
+        summary.columns = [f"{col} (% в кластере)" for col in summary.columns]
+        summary["Самая частая категория"] = mode_df.set_index(cluster_col)["most_frequent"]
+        summary["Всего объектов"] = counts.groupby(cluster_col)["count"].sum().values
+    
     else:
-      counts = (
-          df.groupby([cluster_col, target_col])
-          .size()
-          .reset_index(name="count")
-      )
-
-      total = counts.groupby(cluster_col)["count"].transform("sum")
-      counts["share"] = (counts["count"] / total * 100).round(2)
-
-      # Наиболее частая категория в каждом кластере
-      mode_df = (
-          counts.sort_values(["cluster", "count"], ascending=[True, False])
-          .drop_duplicates(subset=[cluster_col])
-          .rename(columns={target_col: "most_frequent"})
-          .loc[:, [cluster_col, "most_frequent"]]
-      )
-
-      summary = (
-          counts.pivot(index=cluster_col, columns=target_col, values="share")
-          .fillna(0)
-      )
-      summary.columns = [f"{col} (% в кластере)" for col in summary.columns]
-      summary["Самая частая категория"] = mode_df.set_index(cluster_col)["most_frequent"]
-      summary["Всего объектов"] = counts.groupby(cluster_col)["count"].sum().values
+      summary = None
 
     # Объяснение кластеров через DecisionTreeClassifier
     X = df[num_cols + cat_cols]
@@ -506,16 +510,16 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 st.set_page_config(page_title="Кластеризация смешанных данных", layout="wide")
 
 st.title("Кластеризация смешанных данных")
-st.write('''Данное приложение позволяет кластеризовать смешанные табличные данные 
-         (числовые и категориальные) с целевым признаком с использованием HDBSCAN или 
-         Hierarchical agglomerative clustering, где используется предрассчитанная 
-         метрика расстояния на основе Gower Distance. После кластеризации есть возможность 
+st.write('''Данное приложение позволяет кластеризовать смешанные табличные данные
+         (числовые и категориальные) с целевым признаком (или без него) с использованием HDBSCAN или
+         Hierarchical agglomerative clustering, где используется предрассчитанная
+         метрика расстояния на основе Gower Distance. После кластеризации есть возможность
          провести анализ построенных кластеров с помощью решающих деревьев и оценить статистику.''')
 
 st.header("1. Анализ и фильтрация данных")
 # === 1. Загрузка файла ===
 uploaded_file = st.file_uploader("Загрузите CSV или Excel файл", type=["csv", "xlsx"])
-with st.expander('''Если при импорте возникли проблемы с форматом признаков 
+with st.expander('''Если при импорте возникли проблемы с форматом признаков
                     попробуйте выбрать другой CSV или числовой разделитель'''):
   option_decimal = st.radio(
       "Выберите десятичный разделитель",
@@ -551,7 +555,7 @@ if uploaded_file is not None:
 
     st.subheader("Предпросмотр данных и их типы")
     st.dataframe(df.head())
-    st.warning('''Внимательно проверьте типы признаков для успешной кластеризации. 
+    st.warning('''Внимательно проверьте типы признаков для успешной кластеризации.
                   Далее будет возможность привести признаки к числовому типу.''',
                icon="⚠️")
     st.dataframe(df.dtypes.to_frame().T)
@@ -561,13 +565,13 @@ if uploaded_file is not None:
 
     # === 3. Выбор столбцов для приведения к числовому типу ===
 
-    help_to_num = '''Выберите признаки, которые по вашему мнению должны быть числовыми, 
-                    но они определяются как object скорее всего из-за наличия текстовых 
+    help_to_num = '''Выберите признаки, которые по вашему мнению должны быть числовыми,
+                    но они определяются как object скорее всего из-за наличия текстовых
                     случайных значений или ошибок'''
 
     to_num_cols = st.multiselect("Выберите признаки для приведения к числовому типу",
                                  df.columns.tolist(),
-                                 help=help_to_num 
+                                 help=help_to_num
                                 )
     df[to_num_cols] = df[to_num_cols].apply(pd.to_numeric, errors='coerce')
 
@@ -575,7 +579,7 @@ if uploaded_file is not None:
 
     help_drop = '''Выбрасывает ненужные для анализа и кластеризации признаки'''
 
-    drop_cols = st.multiselect('''Выберите признаки для удаления, и не забудьте 
+    drop_cols = st.multiselect('''Выберите признаки для удаления, и не забудьте
                                   про индексные признаки''',
                                df.columns.tolist(),
                                help=help_drop
@@ -585,25 +589,30 @@ if uploaded_file is not None:
 
     # === 3. Выбор таргета ===
 
-    help_target = '''Для кластеризации наличие целевого признака необязательно, 
-                    но для статистического анализа он необходим.'''
+    help_target = '''Для кластеризации наличие целевого признака необязательно,
+                    но для статистического анализа он необходим. Если вы не хотите 
+                    использовать целевую переменную выберите в конце списка No Target'''
 
+    target_cols = df.columns.tolist()
+    target_cols.append("No Target")
     target = st.selectbox(
-        "Выберите целевой признак", 
-        df.columns.tolist(),
-        help=help_target)
+        "Выберите целевой признак",
+        target_cols,
+        help=help_target
+        )
 
-    if  df[target].nunique() > 1000 and pd.api.types.is_object_dtype(df[target]):
-      st.error("Целевой признак с очень высокой кардинальностью, выберите другой признак")
-    df.dropna(subset=[target], inplace=True)
+    if target!="No Target":
+      if  df[target].nunique() > 1000 and pd.api.types.is_object_dtype(df[target]):
+        st.error("Целевой признак с очень высокой кардинальностью, выберите другой признак")
+      df.dropna(subset=[target], inplace=True)
 
     # === 5. Фильтрация ===
 
-    help_filter = '''Отбирает признаки, по которым можно будет отфильтровать данные, 
+    help_filter = '''Отбирает признаки, по которым можно будет отфильтровать данные,
                       в том числе и по датам'''
 
     filter_cols = st.multiselect(
-        "Выберите признаки для фильтра", 
+        "Выберите признаки для фильтра",
         df.columns.tolist(),
         help=help_filter
     )
@@ -648,16 +657,21 @@ if uploaded_file is not None:
                       df = df[df[col].isin(selected_vals)]
 
     # === 5.1 Снижение кардинальности категориальных признаков ========
-    cat_cols = (df
-                .drop(target, axis=1)
-                .select_dtypes(exclude=[np.number, np.datetime64])
-                .columns.tolist())
+    if target!="No Target":
+      cat_cols = (df
+                  .drop(target, axis=1)
+                  .select_dtypes(exclude=[np.number, np.datetime64])
+                  .columns.tolist())
+    else:
+      cat_cols = (df
+                  .select_dtypes(exclude=[np.number, np.datetime64])
+                  .columns.tolist())
 
-    help_card_cat = '''Для повышения качества кластеризации в категориальных признаках 
+    help_card_cat = '''Для повышения качества кластеризации в категориальных признаках
                       можно оставить топ-10 категорий, а остальные заменить на 'Other'''
 
     cat_cols_to_reduce = st.multiselect(
-        "Выберите категориальные признаки для снижения кардинальности", 
+        "Выберите категориальные признаки для снижения кардинальности",
         cat_cols,
         help=help_card_cat
     )
@@ -669,15 +683,22 @@ if uploaded_file is not None:
     missing_option = st.radio("Что делать с пропусками в данных?",
       ("Заполнить медианой и MISSING", "Выбросить объекты с пропусками"),
       horizontal=True)
-
-    num_cols = (df
-                .drop(target, axis=1)
-                .select_dtypes(include=[np.number])
-                .columns.tolist())
-    cat_cols = (df
-                .drop(target, axis=1)
-                .select_dtypes(exclude=[np.number, np.datetime64])
-                .columns.tolist())
+    if target!="No Target":
+      num_cols = (df
+                  .drop(target, axis=1)
+                  .select_dtypes(include=[np.number])
+                  .columns.tolist())
+      cat_cols = (df
+                  .drop(target, axis=1)
+                  .select_dtypes(exclude=[np.number, np.datetime64])
+                  .columns.tolist())
+    else:
+      num_cols = (df
+                  .select_dtypes(include=[np.number])
+                  .columns.tolist())
+      cat_cols = (df
+                  .select_dtypes(exclude=[np.number, np.datetime64])
+                  .columns.tolist())
 
     if missing_option == "Заполнить медианой и MISSING":
       # Заполняем пропуски медианой, либо __MISSING__
@@ -692,7 +713,7 @@ if uploaded_file is not None:
     # === 7. Результат ===
     st.subheader("Отфильтрованные данные")
 
-    st.warning('''У признаков с кардинальностью больше 100 редкие категории 
+    st.warning('''У признаков с кардинальностью больше 100 редкие категории
                   автоматически переназначаются на 'Other'!''')
     for col in cat_cols:
       if df[col].nunique() > 100:
@@ -707,40 +728,41 @@ if uploaded_file is not None:
 
     # Сохраняем данные для кластеризации
     datetime_columns = df.select_dtypes(include=[np.datetime64]).columns
-    if target:
+    if target!="No Target":
       y = df[target]
       X = df.drop(target, axis=1)
     else:
+      X = df.copy()
       y = None
     X = X.drop(datetime_columns, axis=1)
 
     ############# Кластеризация ################################
     st.header("2. Кластеризация")
     st.write('''Данная часть разбита на 2 последовательных тяжелых вычислительных этапа.
-                Сначала рассчитываем метрики расстояний, далее используем ее в 
-                кластеризации данных.  
+                Сначала рассчитываем метрики расстояний, далее используем ее в
+                кластеризации данных.
                 При смене метода кластеризации, метрику расстояния пересчитывать необязательно.''')
     ### Считаем расстояние Говера
-    help_gower = '''Расстояние Гауэра — это мера сходства, используемая для кластеризации 
-                  наборов данных смешанного типа и вычисления степени сходства между 
-                  точками данных на основе комбинации числовых, категориальных и порядковых 
-                  атрибутов. Метод работает путём стандартизации степени сходства каждого 
-                  признака в диапазоне от 0 до 1 с последующим вычислением средневзвешенного 
+    help_gower = '''Расстояние Гауэра — это мера сходства, используемая для кластеризации
+                  наборов данных смешанного типа и вычисления степени сходства между
+                  точками данных на основе комбинации числовых, категориальных и порядковых
+                  атрибутов. Метод работает путём стандартизации степени сходства каждого
+                  признака в диапазоне от 0 до 1 с последующим вычислением средневзвешенного
                   значения этих значений.'''
 
     st.subheader("Расчет метрики расстояния (Gower Distance)", help=help_gower)
-    st.write('''Для дальнейшей кластеризации необходимо рассчитать метрику расстояний 
+    st.write('''Для дальнейшей кластеризации необходимо рассчитать метрику расстояний
                 между объектами. Сначала попробуйте произвести расчет без учета весов.''')
 
-    help_weights = '''Алгоритм может автоматически рассчитывать веса на основе важности 
-                      признаков. Это достигается с помощью метода взаимной информации, 
-                      который помогает сбалансировать вклад различных типов признаков 
-                      (непрерывных и категориальных). Он корректирует дисбаланс 
-                      переменных: устраняет недостаток невзвешенной формулы, которая 
-                      может быть обусловлена ​​большим количеством непрерывных или 
+    help_weights = '''Алгоритм может автоматически рассчитывать веса на основе важности
+                      признаков. Это достигается с помощью метода взаимной информации,
+                      который помогает сбалансировать вклад различных типов признаков
+                      (непрерывных и категориальных). Он корректирует дисбаланс
+                      переменных: устраняет недостаток невзвешенной формулы, которая
+                      может быть обусловлена ​​большим количеством непрерывных или
                       категориальных переменных.'''
 
-    option_weights = st.radio("Учитываем веса на основе взаимной информации с целевым признаком?",
+    option_weights = st.radio("Расчитываем веса на основе взаимной информации с целевым признаком?",
                               ("Нет", "Да"),
                               horizontal=True,
                               help=help_weights)
@@ -755,8 +777,12 @@ if uploaded_file is not None:
       st.session_state.idx_S = idx_S
       st.session_state.idx_rest = idx_rest
       # Рассчитываем веса для расстояния Говера
-      if option_weights == "Да":
+      if option_weights == "Да" and target!="No Target":
         weights = compute_feature_weights(X.iloc[idx_S], y.iloc[idx_S], num_cols, cat_cols)
+      elif option_weights == "Да" and target=="No Target":
+        st.error('''Вы не используете целевую переменную в расчетах! Веса не будут 
+                    учитываться при расчете метрики!''')
+        weights = None
       else:
         weights = None
 
@@ -773,20 +799,20 @@ if uploaded_file is not None:
     #### Кластеризуем
     st.subheader("Кластеризация на основе рассчитанной метрики")
 
-    help_cluster = '''1.HDBSCAN (медленный вариант) — это алгоритм кластеризации, 
-                      основанный на плотности данных. Он идентифицирует кластеры, 
-                      строя минимальное остовное дерево на основе взвешенного графа 
-                      точек данных, преобразуя его в иерархию кластеров, а затем 
-                      выбирая из неё стабильные кластеры на основе их устойчивости 
+    help_cluster = '''1.HDBSCAN (медленный вариант) — это алгоритм кластеризации,
+                      основанный на плотности данных. Он идентифицирует кластеры,
+                      строя минимальное остовное дерево на основе взвешенного графа
+                      точек данных, преобразуя его в иерархию кластеров, а затем
+                      выбирая из неё стабильные кластеры на основе их устойчивости
                       на разных уровнях плотности. Лучшие гиперпарматры подбираются
-                      автоматически с оценкой через Validity Index.  
-                      2.HAC (быстрый вариант) - иерархическая агломеративная 
-                      кластеризация. Метод кластеризации «снизу вверх», который 
-                      начинается с того, что каждая точка данных представляет собой 
-                      отдельный кластер, и итеративно объединяет ближайшие пары 
-                      кластеров, пока не останется только один кластер. В результате 
-                      получается древовидная структура, называемая дендрограммой, 
-                      которая визуализирует иерархию слияний. Лучшее количество 
+                      автоматически с оценкой через Validity Index.
+                      2.HAC (быстрый вариант) - иерархическая агломеративная
+                      кластеризация. Метод кластеризации «снизу вверх», который
+                      начинается с того, что каждая точка данных представляет собой
+                      отдельный кластер, и итеративно объединяет ближайшие пары
+                      кластеров, пока не останется только один кластер. В результате
+                      получается древовидная структура, называемая дендрограммой,
+                      которая визуализирует иерархию слияний. Лучшее количество
                       кластеров подбирается автоматически с оценкой через Silhoutte score'''
 
     option_method = st.radio("Выберите метод кластеризации",
@@ -846,7 +872,7 @@ if uploaded_file is not None:
     ##### Результат кластеризации
     if hasattr(st.session_state, "result"):
       st.subheader("Результат")
-      st.write(f"Отображается {len(st.session_state.result.head(500))}", 
+      st.write(f"Отображается {len(st.session_state.result.head(500))}",
                f"из {len(st.session_state.result)} строк")
       st.dataframe(st.session_state.result.head(500))
 
@@ -857,7 +883,7 @@ if uploaded_file is not None:
             mime="text/csv",
         )
 
-      help_analyze = '''Анализ построенных кластеров с помощью решающих деревьев 
+      help_analyze = '''Анализ построенных кластеров с помощью решающих деревьев
                         и статистические/количественные оценки'''
 
       st.header("3. Анализ кластеризации", help=help_analyze)
@@ -889,25 +915,26 @@ if uploaded_file is not None:
         if "super_tree_html" in st.session_state:
           html(st.session_state.super_tree_html, height=650)
 
-      help_intraclust = '''Смотрим какие признаки влияют на целевой признак 
-                           внутри каждого кластера'''
+      if target!="No Target":
+        help_intraclust = '''Смотрим какие признаки влияют на целевой признак
+                            внутри каждого кластера'''
 
-      st.subheader("Внутрикластерный анализ", help=help_intraclust)
-      option_cluster = st.selectbox(
-          "Выберите кластер для внутрикластерного анализа",
-          st.session_state.result['cluster'].unique()
-      )
-      if st.button("Начать анализ", key="2"):
-        cluster_tree = analyze_within_clusters(
-            st.session_state.result,
-            target,
-            num_cols,
-            cat_cols,
-            cluster=option_cluster
+        st.subheader("Внутрикластерный анализ", help=help_intraclust)
+        option_cluster = st.selectbox(
+            "Выберите кластер для внутрикластерного анализа",
+            st.session_state.result['cluster'].unique()
         )
-        with NamedTemporaryFile(suffix=".html", delete=False) as f1:
-          cluster_tree.save_html(f1.name)
-          html(f1.read(), height=650)
+        if st.button("Начать анализ", key="2"):
+          cluster_tree = analyze_within_clusters(
+              st.session_state.result,
+              target,
+              num_cols,
+              cat_cols,
+              cluster=option_cluster
+          )
+          with NamedTemporaryFile(suffix=".html", delete=False) as f1:
+            cluster_tree.save_html(f1.name)
+            html(f1.read(), height=650)
 
 else:
     st.info("Загрузите файл для начала работы")
