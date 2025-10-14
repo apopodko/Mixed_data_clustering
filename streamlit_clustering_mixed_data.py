@@ -95,7 +95,7 @@ def compute_feature_weights(df, target, num_cols, cat_cols):
     else:
         raise ValueError("Тип целевой переменной должен быть числовым или категориальным")
 
-    # Нормируем веса (сумма = число признаков)
+    # Нормируем веса
     mi = np.maximum(mi, 1e-9)  # чтобы не было нулевых
     mi_normalized = mi / mi.sum() * len(mi)
 
@@ -103,8 +103,7 @@ def compute_feature_weights(df, target, num_cols, cat_cols):
     return weights
 
 # Расчет расстояния Говера
-def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None,
-                          weights=None, dtype=np.float32):
+def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None, weights=None):
     """
     - numeric_ranges: dict col->range. Если None, computed by minmax on df.
     - weights: dict col->weight. Если None - все 1
@@ -112,7 +111,7 @@ def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None,
     X = df.reset_index(drop=True)
     n = len(X)
     if n == 0:
-        return np.zeros((0,0), dtype=dtype)
+        return np.zeros((0,0), dtype=np.float32)
 
     if numeric_ranges is None:
         numeric_ranges = compute_numeric_ranges(X, num_cols, method='minmax')
@@ -147,7 +146,7 @@ def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None,
     total_weight = sum(w_num.values()) + sum(w_cat.values())
     if total_weight <= 0:
         total_weight = 1.0
-    D = (D / float(total_weight)).astype(dtype)
+    D = (D / float(total_weight))
     return D.astype(np.float64)
 
 ### Кластеризация
@@ -742,7 +741,7 @@ if uploaded_file is not None:
     st.header("2. Кластеризация")
     st.write('''Данная часть разбита на 2 последовательных тяжелых вычислительных этапа.
                 Сначала рассчитываем метрики расстояний, далее используем ее в
-                кластеризации данных.
+                кластеризации данных.  
                 При смене метода кластеризации, метрику расстояния пересчитывать необязательно.''')
     ### Считаем расстояние Говера
     help_gower = '''Расстояние Гауэра — это мера сходства, используемая для кластеризации
@@ -807,7 +806,9 @@ if uploaded_file is not None:
                       точек данных, преобразуя его в иерархию кластеров, а затем
                       выбирая из неё стабильные кластеры на основе их устойчивости
                       на разных уровнях плотности. Лучшие гиперпарматры подбираются
-                      автоматически с оценкой через Validity Index.
+                      автоматически с оценкой через Validity Index. Важно ⚠️:
+                      отдельные объекты, не попадающие ни в один кластер, будут иметь 
+                      метку кластера -1.  
                       2.HAC (быстрый вариант) - иерархическая агломеративная
                       кластеризация. Метод кластеризации «снизу вверх», который
                       начинается с того, что каждая точка данных представляет собой
@@ -815,7 +816,9 @@ if uploaded_file is not None:
                       кластеров, пока не останется только один кластер. В результате
                       получается древовидная структура, называемая дендрограммой,
                       которая визуализирует иерархию слияний. Лучшее количество
-                      кластеров подбирается автоматически с оценкой через Silhoutte score'''
+                      кластеров подбирается автоматически с оценкой через Silhoutte score.
+                      Важно ⚠️: отдельно стоящие объекты попадут в кластеры, не смотря на то,
+                       что могут сильно выбиваться по значениям.'''
 
     option_method = st.radio("Выберите метод кластеризации",
                              ("HDBSCAN", "HAC"),
