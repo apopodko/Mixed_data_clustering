@@ -103,7 +103,7 @@ def compute_feature_weights(df, target, num_cols, cat_cols):
     return weights
 
 # Расчет расстояния Говера
-def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None, weights=None):
+def compute_gower_matrix(df, num_cols, cat_cols, num_ranges_method='iqr', weights=None):
     """
     - numeric_ranges: dict col->range. Если None, computed by minmax on df.
     - weights: dict col->weight. Если None - все 1
@@ -113,8 +113,7 @@ def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None, weights=No
     if n == 0:
         return np.zeros((0,0), dtype=np.float32)
 
-    if numeric_ranges is None:
-        numeric_ranges = compute_numeric_ranges(X, num_cols, method='minmax')
+    numeric_ranges = compute_numeric_ranges(X, num_cols, method=num_ranges_method)
 
     D = np.zeros((n, n), dtype=np.float64)  # accumulate in float64 for numeric stability
 
@@ -135,13 +134,13 @@ def compute_gower_matrix(df, num_cols, cat_cols, numeric_ranges=None, weights=No
         # normalized differences (broadcast)
         mat = np.abs(col[:, None] - col[None, :]) / rng
         D += w_num.get(c, 1.0) * mat
-
+        
     # categorical part
     for c in cat_cols:
         col = X[c].astype(str).to_numpy()
         neq = (col[:, None] != col[None, :]).astype(np.float64)
         D += w_cat.get(c, 1.0) * neq
-
+    
     # normalize by total weights sum
     total_weight = sum(w_num.values()) + sum(w_cat.values())
     if total_weight <= 0:
@@ -792,7 +791,6 @@ if uploaded_file is not None:
           X.iloc[idx_S],
           num_cols,
           cat_cols,
-          numeric_ranges=None,
           weights=weights
       )
       st.success("Матрица рассчитана")
