@@ -146,7 +146,6 @@ def compute_gower_matrix(df, num_cols, cat_cols, num_ranges_method='iqr', weight
         # Для скошенных данных берем логарифм признака для расчета Gower distance
         # и соответственно для кластеризации
         sk = skew(col)
-        st.write(c, sk)
         if sk > 2:
             shift = 1 - np.min(col)
             col = np.log1p(col + max(shift, 0))
