@@ -26,6 +26,7 @@ from sklearn.preprocessing import LabelEncoder
 #from category_encoders import CatBoostEncoder
 
 # Feature weights
+from scipy.stats import skew
 from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
 
 # Cluster Explanation
@@ -49,13 +50,19 @@ def compute_numeric_ranges(df, num_cols, method='minmax'):
         if col.size == 0:
             ranges[c] = 1.0
             continue
+        
+        # Для скошенных данных берем логарифм признака для расчета ренжа
+        sk = skew(col)
+        if sk > 2:
+            shift = 1 - np.min(col)
+            col = np.log1p(col + max(shift, 0))
 
         if method == 'minmax':
             r = float(np.max(col) - np.min(col))
         elif method == 'iqr':
             q1 = np.percentile(col, 25)
             q3 = np.percentile(col, 75)
-            r = float((q3 - q1))
+            r = float(q3 - q1)
         else:
             raise ValueError("unknown method")
 
@@ -127,9 +134,23 @@ def compute_gower_matrix(df, num_cols, cat_cols, num_ranges_method='iqr', weight
         w_num = {c: float(weights.get(c, 1.0)) for c in num_cols}
         w_cat = {c: float(weights.get(c, 1.0)) for c in cat_cols}
 
+    # high-cardinality weighting
+    for c in cat_cols:
+       if X[c].nunique() > 100:
+          w_cat[c] = w_cat.get(c, 1.0) / np.sqrt(X[c].nunique())
+
     # numeric part
     for c in num_cols:
         col = X[c].to_numpy(dtype=float)
+
+        # Для скошенных данных берем логарифм признака для расчета Gower distance
+        # и соответственно для кластеризации
+        sk = skew(col)
+        st.write(c, sk)
+        if sk > 2:
+            shift = 1 - np.min(col)
+            col = np.log1p(col + max(shift, 0))
+
         rng = numeric_ranges.get(c, 1.0)
         # normalized differences (broadcast)
         mat = np.abs(col[:, None] - col[None, :]) / rng
@@ -435,7 +456,6 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
 
     return summary, super_tree, importances
 
-######
 ### Общий анализ внутри кластеров
 def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", cluster=0, max_depth=5):
     results = {}
@@ -503,7 +523,7 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 
     return super_tree
 
-######################## Streamlit layout ##################
+######################## Streamlit layout ################################
 
 st.set_page_config(page_title="Кластеризация смешанных данных", layout="wide")
 
@@ -647,7 +667,8 @@ if uploaded_file is not None:
               else:
                   # фильтр по категориям/тексту
                   unique_vals = df[col].dropna().unique().tolist()
-                  if len(unique_vals) > 1 and len(unique_vals) <= 100:  # ограничим слишком большие списки
+                  # ограничим слишком большие списки
+                  if len(unique_vals) > 1 and len(unique_vals) <= 100:
                       selected_vals = st.multiselect(
                           f"{col}: выберите значения",
                           unique_vals,
@@ -736,7 +757,7 @@ if uploaded_file is not None:
       y = None
     X = X.drop(datetime_columns, axis=1)
 
-    ############# Кластеризация ################################
+    # === 8. Кластеризация ===
     st.header("2. Кластеризация")
     st.write('''Данная часть разбита на 2 последовательных тяжелых вычислительных этапа.
                 Сначала рассчитываем метрики расстояний, далее используем ее в
@@ -768,6 +789,7 @@ if uploaded_file is not None:
                               help=help_weights)
 
     if st.button("Рассчитать метрику"):
+      ####################### FAISS INDEX ############################
       # Готовим индексы для FAISS, на случай, несли выборка будет больше 8000
       N = X.shape[0]
       S = min(8000, N)
@@ -872,7 +894,7 @@ if uploaded_file is not None:
         st.session_state.result = result
         st.success(f"Кластеризация методом {option_method} выполнена успешно")
 
-    ##### Результат кластеризации
+    # === 9. Анализ кластеризации === 
     if hasattr(st.session_state, "result"):
       st.subheader("Результат")
       st.write(f"Отображается {len(st.session_state.result.head(500))}",
