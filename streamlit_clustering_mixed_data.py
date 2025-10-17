@@ -62,7 +62,7 @@ def compute_numeric_ranges(df, num_cols, method='minmax'):
         elif method == 'iqr':
             q1 = np.percentile(col, 25)
             q3 = np.percentile(col, 75)
-            r = float(q3 - q1)
+            r = float((q3 - q1) * 1.5)
         else:
             raise ValueError("unknown method")
 
@@ -153,6 +153,7 @@ def compute_gower_matrix(df, num_cols, cat_cols, num_ranges_method='iqr', weight
         rng = numeric_ranges.get(c, 1.0)
         # normalized differences (broadcast)
         mat = np.abs(col[:, None] - col[None, :]) / rng
+        mat = np.clip(mat, 0, 1)
         D += w_num.get(c, 1.0) * mat
         
     # categorical part
@@ -166,6 +167,7 @@ def compute_gower_matrix(df, num_cols, cat_cols, num_ranges_method='iqr', weight
     if total_weight <= 0:
         total_weight = 1.0
     D = (D / float(total_weight))
+
     return D.astype(np.float64)
 
 ### Кластеризация
@@ -183,25 +185,32 @@ def clusterize(df, D, method="HDBSCAN", max_k=20):
       # specify parameters and distributions to sample from
       param_grid = [
           {"min_cluster_size": mcs, "min_samples": ms}
-          for mcs in [10, 20, 30, 50]
-          for ms in [10, 20, 30, 50]
+          for mcs in [10, 20, 30, 50, 100]
+          for ms in [5, 10, 20, 30]
+          if ms <= mcs
       ]
 
       for params in param_grid:
         cl = hdbscan.HDBSCAN(metric="precomputed", **params)
         labels = cl.fit_predict(D)
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
 
-        if len(set(labels)) > 1:
-            score = validity_index(
-                D,
-                labels,
-                metric="precomputed",
-                d=d
-            )
-            if score > best_score:
-                best_score = score
-                best_params = params
-                best_labels = labels
+        if n_clusters < 2 or np.all(labels == -1):
+            continue
+        
+        score = validity_index(
+            D,
+            labels,
+            metric="precomputed",
+            d=d
+        )
+        if not np.isfinite(score):
+            continue
+
+        if score > best_score:
+            best_score = score
+            best_params = params
+            best_labels = labels
 
     elif method == "HAC":
       # преобразуем матрицу в condensed form
