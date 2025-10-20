@@ -28,3 +28,6 @@ cd Mixed_data_clustering
 docker build -t Mixed_data_clustering .
 docker run -p 8501:8501 Mixed_data_clustering
 ```
+
+Tech Stack:
+HAC, HDBSCAN, FAISS, Streamlit, Docker
