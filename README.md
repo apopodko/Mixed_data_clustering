@@ -19,7 +19,7 @@
 Для анализа результатов строятся объясняющие деревья построения кластеров и внутрикластерные объясняющие деревья для исследования влияния объектов и их признаков, сформировавших кластер.
 
 Попробовать:
-Streamlit link: https://mixed-data-clustering.streamlit.app/
+Streamlit link https://mixed-data-clustering.streamlit.app/
 
 Или Docker:
 ```
