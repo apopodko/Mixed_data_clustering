@@ -383,7 +383,13 @@ def assign_faiss(index, X_rest, labels_S, k=3, ood_threshold=None, weighted=True
 #################### Анализ кластеризации ##################################
 
 ### Общий анализ кластеров
-def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluster", max_depth=6):
+def analyze_all_clusters(df, 
+                         target_col, 
+                         num_cols, 
+                         cat_cols, 
+                         cluster_col="cluster", 
+                         max_depth=6, 
+                         show_outlier=False):
     results = {}
     df.reset_index(inplace=True, drop=True)
     if target_col!="No Target":
@@ -431,8 +437,12 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
       summary = None
 
     # Объяснение кластеров через DecisionTreeClassifier
-    X = df[num_cols + cat_cols]
-    y = df[cluster_col].astype(str)
+    if show_outlier==True:
+        X = df[num_cols + cat_cols]
+        y = df[cluster_col].astype(str)
+    else:
+        X = df.query('cluster > -1')[num_cols + cat_cols]
+        y = df.query('cluster > -1')[cluster_col].astype(str)
 
     preproc = ColumnTransformer(
         transformers=[
@@ -443,7 +453,12 @@ def analyze_all_clusters(df, target_col, num_cols, cat_cols, cluster_col="cluste
 
     clf = Pipeline([
         ("prep", preproc),
-        ("tree", DecisionTreeClassifier(max_depth=max_depth, random_state=42))
+        ("tree", DecisionTreeClassifier(
+           max_depth=max_depth, 
+           class_weight="balanced", 
+           min_impurity_decrease=0.01,
+           criterion='entropy',
+           random_state=42))
     ])
 
     clf.fit(X, y)
@@ -928,6 +943,11 @@ if uploaded_file is not None:
           list(range(3, 7)),
           horizontal=True
       )
+      if option_method=="HDBSCAN":
+        option_outliers = st.checkbox("Учитывать выбросы при HDBSCAN для " + 
+                                        "построения (для лучшего разбиения лучше не учитывать)")
+      else:
+        option_outliers = False
       if st.button("Начать анализ", key="1"):
         (st.session_state.summary, 
          st.session_state.super_tree, 
@@ -937,7 +957,8 @@ if uploaded_file is not None:
             target,
             num_cols,
             cat_cols,
-            max_depth=option_tree_depth
+            max_depth=option_tree_depth,
+            show_outlier=option_outliers
         )
 
         with NamedTemporaryFile(suffix=".html", delete=False) as f:
