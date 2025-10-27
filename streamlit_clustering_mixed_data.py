@@ -93,6 +93,8 @@ def compute_feature_weights(df, target, num_cols, cat_cols):
         df_enc[c] = le.fit_transform(df_enc[c].astype(str))
         discrete_features.append(df.columns.get_loc(c))  # индексы категориальных
     X = df_enc.to_numpy()
+    if not discrete_features:
+       discrete_features = False
 
     # Вычисляем MI
     if pd.api.types.is_numeric_dtype(target) == True:
@@ -519,9 +521,6 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
 
     target_results[cluster] = importances
 
-    st.subheader(f"\n Кластер {cluster}: факторы и правила, влияющие на целевой признак {target_col}")
-    st.dataframe(importances.head(5))
-
     super_tree = SuperTree(
         model.named_steps["tree"],
         model.named_steps["prep"].transform(X_sub),
@@ -529,7 +528,7 @@ def analyze_within_clusters(df, target_col, num_cols, cat_cols, cluster_col="clu
         model.named_steps["prep"].get_feature_names_out(),
         target_names=class_names)
 
-    return super_tree
+    return super_tree, importances
 
 ######################## Streamlit layout ################################
 
@@ -920,14 +919,25 @@ if uploaded_file is not None:
                         и статистические/количественные оценки'''
 
       st.header("3. Анализ кластеризации", help=help_analyze)
+      help_overlclust = '''Смотрим как целевой признак распределен по кластерам,
+                           какие признаки формируют кластер'''
+
+      st.subheader("Общекластерный анализ", help=help_overlclust)
+      option_tree_depth = st.radio(
+          "Выберите глубину объясняющего дерева для анализа",
+          list(range(3, 7)),
+          horizontal=True
+      )
       if st.button("Начать анализ", key="1"):
-        st.session_state.summary, st.session_state.super_tree, st.session_state.importances = (
-            analyze_all_clusters(
-                st.session_state.result,
-                target,
-                num_cols,
-                cat_cols
-                )
+        (st.session_state.summary, 
+         st.session_state.super_tree, 
+         st.session_state.importances
+         ) = analyze_all_clusters(
+            st.session_state.result,
+            target,
+            num_cols,
+            cat_cols,
+            max_depth=option_tree_depth
         )
 
         with NamedTemporaryFile(suffix=".html", delete=False) as f:
@@ -936,17 +946,13 @@ if uploaded_file is not None:
 
       if hasattr(st.session_state, "super_tree"):
 
-        help_overlclust = '''Смотрим как целевой признак распределен по кластерам,
-                             какие признаки формируют кластер'''
-
-        st.subheader("Общекластерный анализ", help=help_overlclust)
+        st.text("Правила, объясняющие кластеры")
+        if "super_tree_html" in st.session_state:
+          html(st.session_state.super_tree_html, height=650)
         st.text(f"Распределение целевого признака {target} по кластерам:")
         st.dataframe(st.session_state.summary)
         st.text("\n Главные признаки, формирующие кластеры:")
         st.dataframe(st.session_state.importances.head(10))
-        st.text("Правила, объясняющие кластеры")
-        if "super_tree_html" in st.session_state:
-          html(st.session_state.super_tree_html, height=650)
 
       if target!="No Target":
         help_intraclust = '''Смотрим какие признаки влияют на целевой признак
@@ -957,17 +963,29 @@ if uploaded_file is not None:
             "Выберите кластер для внутрикластерного анализа",
             st.session_state.result['cluster'].unique()
         )
+        option_cluster_tree_depth = st.radio(
+            "Выберите глубину дерева для внутрикластерного анализа",
+            list(range(3, 6)),
+            horizontal=True
+        )
         if st.button("Начать анализ", key="2"):
-          cluster_tree = analyze_within_clusters(
+          (st.session_state.cluster_tree, 
+           st.session_state.importances
+           ) = analyze_within_clusters(
               st.session_state.result,
               target,
               num_cols,
               cat_cols,
-              cluster=option_cluster
+              cluster=option_cluster,
+              max_depth=option_cluster_tree_depth
           )
+          st.write(f"Кластер **{option_cluster}**: правила, " +
+                       f"влияющие на целевой признак **{target}**")
           with NamedTemporaryFile(suffix=".html", delete=False) as f1:
-            cluster_tree.save_html(f1.name)
+            st.session_state.cluster_tree.save_html(f1.name)
             html(f1.read(), height=650)
+          st.text("\n Главные признаки, влияющие на целевую переменную в кластере:")
+          st.dataframe(st.session_state.importances.head(5))
 
 else:
     st.info("Загрузите файл для начала работы")
