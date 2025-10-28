@@ -36,4 +36,4 @@ EXPOSE 8501
 ENV STREAMLIT_TELEMETRY=false
 
 # Run the application.
-CMD ["streamlit", "run", "streamlit_clustering_mixed_data.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "streamlit_clustering_mixed_data.py", "--server.port=8501", "--server.address=localhost"]
